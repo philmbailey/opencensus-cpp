@@ -15,6 +15,7 @@
 #include "opencensus/trace/internal/span_exporter_impl.h"
 
 #include <algorithm>
+#include <memory>
 #include <utility>
 
 #include "absl/synchronization/mutex.h"
@@ -26,8 +27,22 @@ namespace trace {
 namespace exporter {
 
 SpanExporterImpl* SpanExporterImpl::Get() {
-  static SpanExporterImpl* global_span_exporter_impl = new SpanExporterImpl;
-  return global_span_exporter_impl;
+  static auto global_span_exporter_impl = std::unique_ptr<SpanExporterImpl>(new SpanExporterImpl);
+  return global_span_exporter_impl.get();
+}
+
+void SpanExporterImpl::Shutdown() {
+  if (!thread_started_)
+    return;
+  shutdown_ = true;
+  collect_spans_ = false;
+  t_.join();
+  thread_started_ = false;
+  shutdown_ = false;
+}
+
+SpanExporterImpl::~SpanExporterImpl() {
+  Shutdown();
 }
 
 void SpanExporterImpl::SetBatchSize(int size) {
@@ -68,12 +83,15 @@ bool SpanExporterImpl::IsBatchFull() const {
   return spans_.size() >= cached_batch_size_;
 }
 
+bool SpanExporterImpl::ShouldExport() const {
+  return IsBatchFull() || shutdown_;
+}
+
 void SpanExporterImpl::RunWorkerLoop() {
   std::vector<opencensus::trace::exporter::SpanData> span_data;
   std::vector<std::shared_ptr<opencensus::trace::SpanImpl>> batch;
-  // Thread loops forever.
-  // TODO: Add in shutdown mechanism.
-  while (true) {
+  bool stop = false;
+  while (!stop) {
     int size;
     absl::Time next_forced_export_time;
     {
@@ -87,9 +105,12 @@ void SpanExporterImpl::RunWorkerLoop() {
       cached_batch_size_ = size;
       // Wait until batch is full or interval time has been exceeded.
       span_mu_.AwaitWithDeadline(
-          absl::Condition(this, &SpanExporterImpl::IsBatchFull),
+          absl::Condition(this, &SpanExporterImpl::ShouldExport),
           next_forced_export_time);
       if (spans_.empty()) {
+        if (shutdown_) {
+          stop = true;
+        }
         continue;
       }
       std::swap(batch, spans_);

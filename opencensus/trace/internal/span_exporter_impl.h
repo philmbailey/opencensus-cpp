@@ -47,6 +47,12 @@ class SpanExporterImpl {
   void SetBatchSize(int size);
   void SetInterval(absl::Duration interval);
 
+  // flushes the export queue
+  void Shutdown();
+
+  // calls Shutdown
+  ~SpanExporterImpl();
+
   // A shared_ptr to the span is added to a list. The actual conversion to
   // SpanData will take place at a later time via the background thread. This
   // is intended to be called at the Span::End().
@@ -77,6 +83,12 @@ class SpanExporterImpl {
 
   // Returns true if the spans_ batch is full.
   bool IsBatchFull() const;
+
+  // Returns true if the exporter thread should process the spans_buffer
+  bool ShouldExport() const;
+
+  // Flag that the export thread monitors to know when to flush buffer and shut down
+  bool shutdown_ = false;
 
   mutable absl::Mutex span_mu_;
   mutable absl::Mutex handler_mu_;
